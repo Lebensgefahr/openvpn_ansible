@@ -1,0 +1,20 @@
+port {{ item.item.port }}
+proto tcp
+dev {{ item.item.dev }}
+
+server          {{ item.item.network }}
+push            "route {{ item.item.network }}"
+{% for push_option in item.item.push_options %}
+push            "{{ push_option }}"
+{% endfor %}
+
+#ifconfig-pool-persist /var/log/openvpn/{{ item.item.name }}.txt
+client-to-client
+keepalive 10 120
+comp-lzo
+persist-key
+persist-tun
+#status /var/log/openvpn/{{ item.item.name }}.stat
+verb 4
+#log /var/log/openvpn/{{ item.item.name }}.log
+

@@ -1,0 +1,357 @@
+---
+
+- name: Create server private key
+  shell:
+    cmd: wg genkey
+  register: server_private_key
+
+- debug:
+    msg: "{{ server_private_key.stdout }}"
+
+
+- name: Create server public key
+  shell:
+    cmd: echo "{{ server_private_key.stdout }}" | wg pubkey
+  register: server_public_key
+
+- debug:
+    msg: "{{ server_public_key.stdout }}"
+
+
+- name: Create client private key
+  shell:
+    cmd: wg genkey
+  register: client_private_key
+  delegate_to: localhost
+
+- name: Create client public key
+  shell:
+    cmd: echo "{{ client_private_key.stdout }}" | wg pubkey
+  register: client_public_key
+  delegate_to: localhost
+
+- name: Create server private key file
+  copy:
+    content: "{{ server_private_key.stdout }}"
+    dest: "/etc/wireguard/privatekey"
+    mode: '0600'
+
+- name: Create server public key file
+  copy:
+    content: "{{ server_public_key.stdout }}"
+    dest: "/etc/wireguard/publickey"
+    mode: '0600'
+
+- name: Create client private key file
+  copy:
+    content: "{{ client_private_key.stdout }}"
+    dest: "/etc/wireguard/privatekey"
+    mode: '0600'
+  delegate_to: localhost
+
+- name: Create client public key file
+  copy:
+    content: "{{ client_public_key.stdout }}"
+    dest: "/etc/wireguard/publickey"
+    mode: '0600'
+  delegate_to: localhost
+
+- name: Create server configuration file
+  ansible.builtin.template:
+    src: server.conf
+    dest: "/etc/wireguard/wg0.conf"
+    mode: 0600
+
+- name: Create client configuration file
+  ansible.builtin.template:
+    src: client.conf
+    dest: "/etc/wireguard/wg0.conf"
+    mode: 0600
+  delegate_to: localhost
+
+- name: Enable and start wireguard server
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    state: restarted
+    enabled: yes
+
+- name: Enable and start wireguard client
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    state: restarted
+    enabled: yes
+  delegate_to: localhost
+
+
+
+- fail:
+
+- name: install package
+  ansible.builtin.package:
+    name: 
+      - wireguard
+    state: present
+  tags:
+    - run
+
+- name: Downloading easy-tls
+  ansible.builtin.get_url:
+    url:  "{{ item }}"
+    dest: "/usr/share/easy-rsa"
+    mode: 0755
+  with_items:
+    - https://raw.githubusercontent.com/TinCanTech/easy-tls/master/easytls
+  tags:
+    - run
+
+- name: "Check if pki is already initialized"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki"
+  register: result
+  tags:
+    - run
+
+- name: Initialize pki
+  shell: "./easyrsa init-pki"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  when: not result.stat.exists
+  tags:
+    - run
+
+- name: "Check if ca.crt is already present"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/ca.crt"
+  register: result
+  tags:
+    - run
+
+- name: Create ca.crt
+  shell: "./easyrsa --batch build-ca nopass"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  when: not result.stat.exists
+  tags:
+    - run
+
+- name: "Check if server cert is already present"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/issued/{{ item.name }}.crt"
+  with_items: "{{ servers }}"
+  register: result
+  tags:
+    - run
+
+- name: Create server cert
+  shell: "./easyrsa build-server-full {{ item.item.name }} nopass"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ result.results }}"
+  when:
+    - item.stat.exists == false
+  tags:
+    - run
+
+- name: "Check if tls is already initialized"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/easytls"
+  register: easytls
+  tags:
+    - run
+
+- name: Initialize TLS
+  shell: "./easytls init-tls"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  when:
+    - easytls.stat.exists == false
+  tags:
+    - run
+
+- name: "Check if tls-crypt key is presented"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/easytls/tls-crypt.key"
+  register: tlscrypt
+  tags:
+    - run
+
+- name: Create tls-crypt key
+  shell: "./easytls build-tls-crypt"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  when:
+    - tlscrypt.stat.exists == false
+  tags:
+    - run
+
+- name: "Check if DH is already present"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/dh.pem"
+  register: dh
+  tags:
+    - run
+
+- name: Create DH
+  shell: "./easyrsa gen-dh"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  when:
+    - dh.stat.exists == false
+  tags:
+    - run
+
+- name: "Check if client cert is already present"
+  ansible.builtin.stat:
+    path: "/usr/share/easy-rsa/pki/issued/{{ item.0.name}}_{{ item.1.name }}.crt"
+  with_subelements: 
+    - "{{ servers }}"
+    - clients
+  register: clients
+  tags:
+    - run
+
+- debug: msg="{{ item.item.0.name }}_{{ item.item.1.name }}"
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+- name: Create client cert
+  shell: "./easyrsa --batch build-client-full {{ item.item.0.name }}_{{ item.item.1.name }} nopass"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ clients.results }}"
+  when:
+    - item.stat.exists == false
+  tags:
+    - run
+
+
+- name: Remove previous server inline file
+  shell: "./easytls --batch ri {{ item.item.name }}"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ result.results }}"
+  ignore_errors: true
+  tags:
+    - run
+
+- name: Create server inline file
+  shell: "./easytls --batch itc {{ item.item.name }} add-dh"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ result.results }}"
+  tags:
+    - run
+
+- name: Remove old client inline file
+  shell: "./easytls --batch ri {{ item.item.0.name }}_{{ item.item.1.name }}"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ clients.results }}"
+  ignore_errors: true
+  tags:
+    - run
+
+- name: Create client inline file
+  shell: "./easytls --batch itc {{ item.item.0.name }}_{{ item.item.1.name }}"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+- name: Create server configuration file
+  ansible.builtin.template:
+    src: openvpn-server.conf.j2
+    dest: "/etc/openvpn/server/{{ item.item.name }}.conf"
+    mode: 0600
+  with_items: "{{ result.results }}"
+  tags:
+    - run
+
+- name: Recognize interface for default route
+  shell: 'ip -j route show default | jq -r .[].dev'
+  register: interface_out
+  tags:
+    - run
+
+- debug:
+    msg: "{{ interface_out.stdout }}"
+  tags:
+    - run
+
+- name: Write inline to server configuration file
+  shell: "./easytls --batch is {{ item.item.name }} >> /etc/openvpn/server/{{ item.item.name }}.conf"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  with_items: "{{ result.results }}"
+  tags:
+    - run
+
+- name: Add iptables rule
+  ansible.builtin.iptables:
+    table: nat
+    chain: POSTROUTING
+    out_interface: "{{ interface_out.stdout }}"
+    source: "{{ item.item.network | replace(' ', '/') }}"
+    jump: MASQUERADE
+    comment: NAT rule for openvpn clients
+  become: yes
+  with_items: "{{ result.results }}"
+  tags:
+    - run
+
+- name: Persist iptables rules
+  shell: "iptables-save > /etc/iptables/rules.v4"
+  tags:
+    - run
+
+- name: Enable and start openvpn server
+  ansible.builtin.systemd:
+    name: openvpn-server@{{ item.item.name }}
+    state: restarted
+    enabled: yes
+  with_items: "{{ result.results }}"
+  tags:
+    - run
+
+- debug:
+    msg: "{{ item.item }}"
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+- name: Create client configuration file
+  ansible.builtin.template:
+    src: openvpn-client.conf.j2
+    dest: "/etc/openvpn/client/{{ item.item.0.name }}_{{ item.item.1.name }}.ovpn"
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+- name: Write client inline to a configuration file
+  shell: "./easytls --batch is {{ item.item.0.name }}_{{ item.item.1.name }} >> /etc/openvpn/client/{{ item.item.0.name }}_{{ item.item.1.name }}.ovpn"
+  args:
+    chdir: "/usr/share/easy-rsa/"
+  register: client_inlines
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+- name: Download client configuration file
+  fetch:
+    src: "/etc/openvpn/client/{{ item.item.0.name }}_{{ item.item.1.name }}.ovpn"
+    dest: "{{ playbook_dir }}/{{ item.item.0.name }}_{{ item.item.1.name }}.conf"
+    flat: yes
+  with_items: "{{ clients.results }}"
+  tags:
+    - run
+
+
+- name: Remove client configuration files from remote
+  ansible.builtin.file:
+    path: "/etc/openvpn/client/{{ item.item.0.name }}_{{ item.item.1.name }}.ovpn"
+    state: absent
+  with_items: "{{ clients.results }}"
+  tags:
+    - run

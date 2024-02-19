@@ -1,0 +1,7 @@
+---
+ - name: Prepare openvpn server
+   gather_facts: false
+   hosts: openvpn_server
+   roles:
+     - openvpn-server
+

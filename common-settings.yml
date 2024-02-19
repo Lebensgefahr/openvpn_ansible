@@ -1,0 +1,7 @@
+---
+ - name: Make common settings
+   gather_facts: false
+   hosts: openvpn_server
+   roles:
+     - common
+

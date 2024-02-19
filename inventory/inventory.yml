@@ -1,0 +1,30 @@
+all:
+  vars:
+    ansible_user: lebensgefahr
+    ansible_become: yes
+    ansible_become_method: sudo
+  children:
+    openvpn_server:
+      hosts:
+        11.11.11.11:2222:
+          servers:
+            - name: box
+              dev: tun
+              port: 11194
+              network: "192.168.2.0 255.255.255.0"
+              push_options:
+                - route 192.168.1.0 255.255.255.0
+              clients:
+                - name: client1
+                - name: client2
+            - name: box_gateway
+              dev: tun1
+              port: 11195
+              network: "192.168.3.0 255.255.255.0"
+              push_options:
+                - route 192.168.1.0 255.255.255.0
+                - redirect-gateway def1
+              clients:
+                - name: client1
+                - name: client2
+                - name: client3
